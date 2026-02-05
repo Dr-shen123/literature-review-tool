@@ -1,4 +1,4 @@
-# literature_reviewer_with_custom_columns_v2.py
+# literature_reviewer_web_optimized.py
 import streamlit as st
 import pandas as pd
 import openpyxl
@@ -156,16 +156,51 @@ def initialize_session_state():
         'show_column_mapping': False,
         'mapping_confirmed': False,
         'auto_advance': True,
-        'font_size': 16,  # 默认字体大小
-        'font_size_abstract': 14,  # 摘要字体大小
-        'font_size_translation': 14,  # 翻译字体大小
-        'extra_columns': {},  # 存储自定义列配置 {列名: {display_name, position, collapsed}}
-        'show_extra_columns': True  # 是否显示自定义列
+        'font_size': 16,
+        'font_size_abstract': 14,
+        'font_size_translation': 14,
+        'extra_columns': {},
+        'show_extra_columns': True,
+        'should_auto_advance': False,  # 新增：自动跳转标记
+        'current_note': ''  # 新增：当前备注临时存储
     }
     
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+# ====================== 核心回调函数 ======================
+def go_prev():
+    """安全跳转到上一篇"""
+    if st.session_state.current_index > 0:
+        st.session_state.current_index -= 1
+
+def go_next():
+    """安全跳转到下一篇"""
+    df = st.session_state.df
+    if st.session_state.current_index < len(df) - 1:
+        st.session_state.current_index += 1
+
+def handle_classification(selection):
+    """处理分类选择的回调函数"""
+    df = st.session_state.df
+    current_idx = st.session_state.current_index
+    
+    # 保存当前备注
+    note_key = f"note_{current_idx}"
+    if st.session_state.current_note:
+        st.session_state.notes[note_key] = st.session_state.current_note
+    
+    # 记录分类选择
+    st.session_state.selections[current_idx] = selection
+    
+    # 设置自动跳转标记（如果启用）
+    if st.session_state.auto_advance and current_idx < len(df) - 1:
+        st.session_state.should_auto_advance = True
+
+def toggle_auto_advance():
+    """切换自动跳转状态"""
+    st.session_state.auto_advance = not st.session_state.auto_advance
 
 # ====================== 工具函数 ======================
 def detect_column_candidates(df):
@@ -209,7 +244,6 @@ def save_results():
         return None
     
     df = st.session_state.df
-    column_mapping = st.session_state.column_mapping
     
     # 创建结果DataFrame（主工作表）
     result_df = df.copy()
@@ -285,7 +319,7 @@ def save_results():
             # 颜色填充定义
             red_fill = PatternFill(start_color='FFFF0000', end_color='FFFF0000', fill_type='solid')
             yellow_fill = PatternFill(start_color='FFFFFF00', end_color='FFFFFF00', fill_type='solid')
-            green_fill = PatternFill(start_color='FF90EE90', end_color='FF90EE90', fill_type='solid')  # 添加绿色填充
+            green_fill = PatternFill(start_color='FF90EE90', end_color='FF90EE90', fill_type='solid')
             
             # 从第二行开始（第一行是标题）
             for i, row in enumerate(ws_all.iter_rows(min_row=2, max_row=len(df)+1), start=0):
@@ -297,15 +331,13 @@ def save_results():
                         cell.fill = red_fill
                     elif selection == '待定':
                         cell.fill = yellow_fill
-                    elif selection == '纳入':  # 添加对纳入文献的处理
+                    elif selection == '纳入':
                         cell.fill = green_fill
             
-            # 为分类工作表的序号列添加简单格式（可选）
+            # 为分类工作表的序号列添加简单格式
             for sheet_name, df_sheet in [('纳入文章', df_include), ('待定文章', df_pending), ('排除文章', df_exclude)]:
                 if sheet_name in wb.sheetnames and len(df_sheet) > 0:
                     ws_sheet = wb[sheet_name]
-                    # 可以根据需要为分类工作表的序号列添加不同颜色
-                    # 例如：纳入文章用绿色，待定文章用橙色，排除文章用红色
                     if sheet_name == '纳入文章':
                         fill_color = PatternFill(start_color='FF90EE90', end_color='FF90EE90', fill_type='solid')
                     elif sheet_name == '待定文章':
@@ -314,7 +346,7 @@ def save_results():
                         fill_color = PatternFill(start_color='FFFFCCCC', end_color='FFFFCCCC', fill_type='solid')
                     
                     for i, row in enumerate(ws_sheet.iter_rows(min_row=2, max_row=len(df_sheet)+1), start=1):
-                        cell = row[0]  # 第一列（序号列）
+                        cell = row[0]
                         cell.fill = fill_color
             
             wb.save(temp_path)
@@ -325,37 +357,58 @@ def save_results():
         st.error(f"保存文件时出错: {str(e)}")
         return None
 
-def handle_classification(selection):
-    """处理分类选择"""
-    df = st.session_state.df
-    current_idx = st.session_state.current_index
-    
-    # 保存当前备注
-    note_key = f"note_{current_idx}"
-    if 'current_note' in st.session_state:
-        st.session_state.notes[note_key] = st.session_state.current_note
-    
-    # 记录分类选择
-    st.session_state.selections[current_idx] = selection
-    
-    # 检查是否启用自动跳转
-    if st.session_state.auto_advance and current_idx < len(df) - 1:
-        st.session_state.current_index += 1
-        st.rerun()
-
 def display_custom_column_value(value, col_name, current_idx):
     """显示自定义列的值"""
     if pd.isna(value):
         return ""
     
     value_str = str(value)
-    # 根据内容长度决定显示方式
     if len(value_str) > 200:
-        return st.text_area("", value=value_str, height=100, 
-                          key=f"extra_{col_name}_{current_idx}", disabled=True, label_visibility="collapsed")
+        st.text_area("", value=value_str, height=100, 
+                    key=f"extra_{col_name}_{current_idx}", disabled=True, label_visibility="collapsed")
     else:
-        return st.markdown(f'<div style="padding: 8px; background-color: #f8f9fa; border-radius: 4px; margin-bottom: 10px;">{value_str}</div>', 
-                         unsafe_allow_html=True)
+        st.markdown(f'<div style="padding: 8px; background-color: #f8f9fa; border-radius: 4px; margin-bottom: 10px;">{value_str}</div>', 
+                   unsafe_allow_html=True)
+
+def display_custom_columns_by_position(position, df, current_idx):
+    """按位置显示自定义列"""
+    if not st.session_state.extra_columns:
+        return
+    
+    cols_in_position = []
+    for col_name, col_config in st.session_state.extra_columns.items():
+        if col_config['position'] == position:
+            cols_in_position.append((col_name, col_config))
+    
+    if not cols_in_position:
+        return
+    
+    direct_cols = []
+    collapsed_cols = []
+    
+    for col_name, col_config in cols_in_position:
+        if col_config['collapsed']:
+            collapsed_cols.append((col_name, col_config))
+        else:
+            direct_cols.append((col_name, col_config))
+    
+    # 显示不折叠的列
+    for col_name, col_config in direct_cols:
+        if col_name in df.columns:
+            value = df.iloc[current_idx][col_name]
+            if pd.notna(value):
+                st.markdown(f"**{col_config['display_name']}**")
+                display_custom_column_value(value, col_name, current_idx)
+    
+    # 显示折叠的列
+    if collapsed_cols:
+        with st.expander("📋 更多信息", expanded=False):
+            for col_name, col_config in collapsed_cols:
+                if col_name in df.columns:
+                    value = df.iloc[current_idx][col_name]
+                    if pd.notna(value):
+                        st.markdown(f"**{col_config['display_name']}**")
+                        display_custom_column_value(value, col_name, current_idx)
 
 # ====================== 字体大小设置界面 ======================
 def create_font_settings_ui():
@@ -364,7 +417,6 @@ def create_font_settings_ui():
         col1, col2 = st.columns(2)
         
         with col1:
-            # 摘要字体大小
             font_size_abstract = st.slider(
                 "摘要字体大小",
                 min_value=10,
@@ -375,12 +427,10 @@ def create_font_settings_ui():
             )
             st.session_state.font_size_abstract = font_size_abstract
             
-            # 预览
             st.markdown(f'<div class="font-preview" style="font-size: {font_size_abstract}px;">摘要预览：这是一个示例文本，使用当前字体大小显示。</div>', 
                        unsafe_allow_html=True)
         
         with col2:
-            # 翻译字体大小
             font_size_translation = st.slider(
                 "翻译字体大小",
                 min_value=10,
@@ -391,16 +441,13 @@ def create_font_settings_ui():
             )
             st.session_state.font_size_translation = font_size_translation
             
-            # 预览
             st.markdown(f'<div class="font-preview" style="font-size: {font_size_translation}px;">翻译预览：This is a sample text showing current font size.</div>', 
                        unsafe_allow_html=True)
         
-        # 重置按钮
         if st.button("重置为默认大小", use_container_width=True):
             st.session_state.font_size_abstract = 14
             st.session_state.font_size_translation = 14
             st.success("字体大小已重置")
-            st.rerun()
 
 # ====================== 主应用 ======================
 def main():
@@ -415,7 +462,6 @@ def main():
     with st.sidebar:
         st.header("📁 文件管理")
         
-        # 文件上传
         uploaded_file = st.file_uploader(
             "上传Excel文件",
             type=['xlsx', 'xls'],
@@ -427,7 +473,6 @@ def main():
                 try:
                     df = pd.read_excel(uploaded_file)
                     
-                    # 确保有序号列
                     if '序号' not in df.columns:
                         df.insert(0, '序号', range(1, len(df) + 1))
                     
@@ -439,17 +484,16 @@ def main():
                     st.session_state.current_index = 0
                     st.session_state.selections = {}
                     st.session_state.notes = {}
-                    st.session_state.extra_columns = {}  # 重置自定义列配置
+                    st.session_state.extra_columns = {}
+                    st.session_state.should_auto_advance = False
                     
                     st.success(f"成功加载 {len(df)} 篇文献")
                     
                 except Exception as e:
                     st.error(f"读取文件失败: {str(e)}")
         
-        # 字体大小设置（全局显示）
         create_font_settings_ui()
         
-        # 列映射配置
         if st.session_state.df is not None and not st.session_state.mapping_confirmed:
             st.header("🔧 列映射配置")
             
@@ -457,7 +501,6 @@ def main():
             columns = [""] + df.columns.tolist()
             candidates = detect_column_candidates(df)
             
-            # 标题列选择
             title_default = candidates['title'][0] if candidates['title'] else ""
             title_col = st.selectbox(
                 "选择标题列",
@@ -466,7 +509,6 @@ def main():
                 key="title_select"
             )
             
-            # 标题翻译列选择
             title_trans_default = candidates['title_translation'][0] if candidates['title_translation'] else ""
             title_trans_col = st.selectbox(
                 "选择标题翻译列（可选）",
@@ -475,7 +517,6 @@ def main():
                 key="title_trans_select"
             )
             
-            # 摘要列选择
             abstract_default = candidates['abstract'][0] if candidates['abstract'] else ""
             abstract_col = st.selectbox(
                 "选择摘要列",
@@ -484,7 +525,6 @@ def main():
                 key="abstract_select"
             )
             
-            # 摘要翻译列选择
             abstract_trans_default = candidates['abstract_translation'][0] if candidates['abstract_translation'] else ""
             abstract_trans_col = st.selectbox(
                 "选择摘要翻译列（可选）",
@@ -493,15 +533,12 @@ def main():
                 key="abstract_trans_select"
             )
             
-            # 自定义列配置
             st.subheader("🔍 自定义显示列配置")
             st.markdown('<div class="custom-columns-section">', unsafe_allow_html=True)
             
-            # 选择要显示的额外列
             available_columns = [col for col in df.columns if col not in [title_col, title_trans_col, abstract_col, abstract_trans_col, '序号', '备注']]
             
             if available_columns:
-                # 初始化extra_columns
                 if 'extra_columns' not in st.session_state:
                     st.session_state.extra_columns = {}
                 
@@ -512,18 +549,13 @@ def main():
                     help="选择需要在文献详情中显示的额外列"
                 )
                 
-                # 为每个选中的列配置显示选项
                 st.markdown("**列显示配置**")
-                
-                # 获取现有的配置或创建新的
                 extra_cols_config = st.session_state.extra_columns.copy()
                 
-                # 为每个选中的列创建配置项
                 for i, col in enumerate(extra_cols_selected):
                     st.markdown(f'<div class="column-config-item">', unsafe_allow_html=True)
                     st.markdown(f"**列{i+1}: `{col}`**")
                     
-                    # 获取现有配置或创建默认配置
                     if col in extra_cols_config:
                         col_config = extra_cols_config[col]
                     else:
@@ -536,7 +568,6 @@ def main():
                     col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        # 显示名称
                         display_name = st.text_input(
                             "显示名称",
                             value=col_config['display_name'],
@@ -545,7 +576,6 @@ def main():
                         )
                     
                     with col2:
-                        # 位置选择
                         position = st.selectbox(
                             "显示位置",
                             options=['原文信息栏', '翻译信息栏', '分类选择后'],
@@ -555,7 +585,6 @@ def main():
                         )
                     
                     with col3:
-                        # 是否折叠
                         collapsed = st.checkbox(
                             "折叠显示",
                             value=col_config['collapsed'],
@@ -563,7 +592,6 @@ def main():
                             help="勾选后该列将在折叠区域中显示"
                         )
                     
-                    # 更新配置
                     extra_cols_config[col] = {
                         'display_name': display_name,
                         'position': position,
@@ -571,7 +599,6 @@ def main():
                     }
                     st.markdown('</div>', unsafe_allow_html=True)
                 
-                # 移除未选中的列的配置
                 cols_to_remove = [col for col in extra_cols_config if col not in extra_cols_selected]
                 for col in cols_to_remove:
                     del extra_cols_config[col]
@@ -598,21 +625,17 @@ def main():
                         }
                         st.session_state.mapping_confirmed = True
                         st.success("列映射已确认！")
-                        st.rerun()
             
             with col2:
                 if st.button("重置", type="secondary", use_container_width=True):
                     st.session_state.column_mapping = {}
                     st.session_state.extra_columns = {}
-                    st.rerun()
         
-        # 导航与设置（如果映射已确认）
         if st.session_state.df is not None and st.session_state.mapping_confirmed:
             df = st.session_state.df
             
             st.header("⚙️ 设置与导航")
             
-            # 自动跳转设置
             st.session_state.auto_advance = st.checkbox(
                 "选择分类后自动跳转到下一篇",
                 value=st.session_state.auto_advance,
@@ -621,19 +644,15 @@ def main():
             
             current_idx = st.session_state.current_index
             
-            # 导航控制
             col_nav1, col_nav2 = st.columns(2)
             with col_nav1:
-                if st.button("◀ 上一篇", disabled=current_idx <= 0, use_container_width=True):
-                    st.session_state.current_index -= 1
-                    st.rerun()
+                st.button("◀ 上一篇", disabled=current_idx <= 0, 
+                         on_click=go_prev, use_container_width=True)
             
             with col_nav2:
-                if st.button("下一篇 ▶", disabled=current_idx >= len(df)-1, use_container_width=True):
-                    st.session_state.current_index += 1
-                    st.rerun()
+                st.button("下一篇 ▶", disabled=current_idx >= len(df)-1, 
+                         on_click=go_next, use_container_width=True)
             
-            # 快速跳转
             target_idx = st.number_input(
                 "跳转到文献序号",
                 min_value=1,
@@ -642,11 +661,10 @@ def main():
                 key="jump_input"
             )
             
-            if target_idx - 1 != current_idx:
-                st.session_state.current_index = target_idx - 1
-                st.rerun()
+            if st.button("执行跳转", use_container_width=True):
+                if 1 <= target_idx <= len(df):
+                    st.session_state.current_index = target_idx - 1
             
-            # 进度统计
             st.header("📊 进度统计")
             
             total = len(df)
@@ -656,7 +674,6 @@ def main():
             st.progress(progress)
             st.write(f"**已处理**: {processed}/{total} 篇 ({progress:.1%})")
             
-            # 分类统计
             if st.session_state.selections:
                 from collections import Counter
                 counts = Counter(st.session_state.selections.values())
@@ -669,17 +686,14 @@ def main():
                 with col_stat3:
                     st.metric("待定", counts.get('待定', 0))
             
-            # 保存导出
             st.header("💾 保存导出")
             
-            # 显示导出说明
             st.info("导出将生成包含以下工作表的Excel文件：\n1. 所有文献（带颜色标记）\n2. 纳入文章\n3. 待定文章\n4. 排除文章")
             
             if st.button("保存进度并导出", type="primary", use_container_width=True):
                 temp_path = save_results()
                 
                 if temp_path:
-                    # 提供下载
                     with open(temp_path, 'rb') as f:
                         st.download_button(
                             label="📥 下载Excel文件",
@@ -689,19 +703,24 @@ def main():
                             use_container_width=True
                         )
                     
-                    # 清理临时文件
                     os.unlink(temp_path)
     
     # ====================== 主内容区域 ======================
     if st.session_state.df is not None and st.session_state.mapping_confirmed:
         df = st.session_state.df
+        
+        # 关键修复：检查并执行自动跳转（必须在渲染前）
+        if st.session_state.get('should_auto_advance'):
+            if st.session_state.current_index < len(df) - 1:
+                st.session_state.current_index += 1
+            st.session_state.should_auto_advance = False
+            st.rerun()
+        
         current_idx = st.session_state.current_index
         column_mapping = st.session_state.column_mapping
         
-        # 创建文献卡片
         st.markdown('<div class="paper-card">', unsafe_allow_html=True)
         
-        # 顶部状态栏
         col_top1, col_top2 = st.columns([4, 1])
         
         with col_top1:
@@ -715,14 +734,12 @@ def main():
         
         st.markdown("---")
         
-        # 双栏显示文献内容
         col_content1, col_content2 = st.columns(2)
         
         with col_content1:
             st.markdown('<div class="content-section">', unsafe_allow_html=True)
             st.markdown("#### 原文信息")
             
-            # 标题
             title_col = column_mapping.get('title')
             if title_col and title_col in df.columns:
                 title = df.iloc[current_idx][title_col]
@@ -731,18 +748,15 @@ def main():
                     st.markdown(f'<div style="margin-bottom: 15px; padding: 10px; background-color: #f8f9fa; border-radius: 4px; font-size: 18px;">{title}</div>', 
                                unsafe_allow_html=True)
             
-            # 摘要
             abstract_col = column_mapping.get('abstract')
             if abstract_col and abstract_col in df.columns:
                 abstract = df.iloc[current_idx][abstract_col]
                 if pd.notna(abstract):
                     st.markdown("**摘要**")
-                    # 使用动态字体大小
                     font_size = st.session_state.font_size_abstract
                     st.markdown(f'<div style="white-space: pre-wrap; line-height: 1.6; margin-bottom: 20px; font-size: {font_size}px;">{abstract}</div>', 
                                unsafe_allow_html=True)
             
-            # 显示位置在"原文信息栏"的自定义列
             display_custom_columns_by_position('原文信息栏', df, current_idx)
             
             st.markdown('</div>', unsafe_allow_html=True)
@@ -751,7 +765,6 @@ def main():
             st.markdown('<div class="content-section">', unsafe_allow_html=True)
             st.markdown("#### 翻译信息")
             
-            # 标题翻译
             title_trans_col = column_mapping.get('title_translation')
             if title_trans_col and title_trans_col in df.columns:
                 title_trans = df.iloc[current_idx][title_trans_col]
@@ -762,61 +775,53 @@ def main():
             else:
                 st.info("无标题翻译信息")
             
-            # 摘要翻译
             abstract_trans_col = column_mapping.get('abstract_translation')
             if abstract_trans_col and abstract_trans_col in df.columns:
                 abstract_trans = df.iloc[current_idx][abstract_trans_col]
                 if pd.notna(abstract_trans):
                     st.markdown("**摘要翻译**")
-                    # 使用动态字体大小
                     font_size = st.session_state.font_size_translation
                     st.markdown(f'<div style="white-space: pre-wrap; line-height: 1.6; margin-bottom: 20px; font-size: {font_size}px;">{abstract_trans}</div>', 
                                unsafe_allow_html=True)
+            else:
+                st.info("无摘要翻译信息")
             
-            # 显示位置在"翻译信息栏"的自定义列
             display_custom_columns_by_position('翻译信息栏', df, current_idx)
             
             st.markdown('</div>', unsafe_allow_html=True)
         
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # 分类按钮区域
         st.markdown("### 🏷️ 分类选择")
         
         col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
         
         with col_btn1:
-            if st.button("✅ 纳入", key="include_btn", use_container_width=True):
-                handle_classification('纳入')
+            st.button("✅ 纳入", key="include_btn", 
+                     on_click=handle_classification, args=('纳入',), use_container_width=True)
         
         with col_btn2:
-            if st.button("❌ 排除", key="exclude_btn", use_container_width=True):
-                handle_classification('排除')
+            st.button("❌ 排除", key="exclude_btn", 
+                     on_click=handle_classification, args=('排除',), use_container_width=True)
         
         with col_btn3:
-            if st.button("⚠️ 待定", key="pending_btn", use_container_width=True):
-                handle_classification('待定')
+            st.button("⚠️ 待定", key="pending_btn", 
+                     on_click=handle_classification, args=('待定',), use_container_width=True)
         
         with col_btn4:
-            if st.button("⏸️ 暂停跳转", key="pause_btn", use_container_width=True, type="secondary"):
-                st.session_state.auto_advance = not st.session_state.auto_advance
-                status = "已启用" if st.session_state.auto_advance else "已暂停"
-                st.success(f"自动跳转{status}")
-                st.rerun()
+            btn_label = "⏸️ 暂停跳转" if st.session_state.auto_advance else "▶️ 启用跳转"
+            st.button(btn_label, key="pause_btn", 
+                     on_click=toggle_auto_advance, use_container_width=True, type="secondary")
         
-        # 显示自动跳转状态
         if st.session_state.auto_advance:
             st.info("自动跳转已启用 - 选择分类后将自动跳转到下一篇")
         else:
             st.warning("自动跳转已暂停 - 选择分类后不会自动跳转")
         
-        # 显示位置在"分类选择后"的自定义列
         display_custom_columns_by_position('分类选择后', df, current_idx)
         
-        # 备注区域
         st.markdown("### 📝 备注")
         
-        # 获取或初始化当前备注
         note_key = f"note_{current_idx}"
         if note_key not in st.session_state.notes:
             existing_note = df.iloc[current_idx].get('备注', '') if '备注' in df.columns else ''
@@ -824,7 +829,6 @@ def main():
                 existing_note = ''
             st.session_state.notes[note_key] = existing_note
         
-        # 备注输入框
         current_note = st.text_area(
             "在此输入备注内容",
             value=st.session_state.notes[note_key],
@@ -835,38 +839,28 @@ def main():
             label_visibility="collapsed"
         )
         
-        # 保存当前备注到session
         st.session_state.notes[note_key] = current_note
         st.session_state.current_note = current_note
         
-        # 底部导航
         st.markdown("---")
         st.markdown("### 导航控制")
         
         col_bottom1, col_bottom2, col_bottom3 = st.columns([1, 2, 1])
         
         with col_bottom1:
-            if st.button("◀ 上一篇", key="bottom_prev", disabled=current_idx <= 0, use_container_width=True):
-                # 保存当前备注
-                st.session_state.notes[note_key] = current_note
-                st.session_state.current_index -= 1
-                st.rerun()
+            st.button("◀ 上一篇", key="bottom_prev", disabled=current_idx <= 0, 
+                     on_click=go_prev, use_container_width=True)
         
         with col_bottom2:
             st.markdown(f"**当前文献**: {current_idx + 1} / {len(df)}", help="当前文献序号/总文献数")
         
         with col_bottom3:
-            if st.button("下一篇 ▶", key="bottom_next", disabled=current_idx >= len(df) - 1, use_container_width=True):
-                # 保存当前备注
-                st.session_state.notes[note_key] = current_note
-                st.session_state.current_index += 1
-                st.rerun()
+            st.button("下一篇 ▶", key="bottom_next", disabled=current_idx >= len(df) - 1, 
+                     on_click=go_next, use_container_width=True)
     
     else:
-        # 欢迎界面
         st.info("👈 请在左侧边栏上传Excel文件开始使用")
         
-        # 使用说明
         with st.expander("📖 使用说明", expanded=True):
             st.markdown("""
             ### 欢迎使用文献筛选工具！
@@ -919,7 +913,6 @@ def main():
               - 便于后续整理和分析
             """)
         
-        # 示例文件格式
         st.markdown("### 📋 示例Excel格式")
         example_data = {
             '序号': [1, 2, 3],
@@ -934,48 +927,6 @@ def main():
             '备注': ['重要参考文献', '方法新颖', '综述文章']
         }
         st.dataframe(pd.DataFrame(example_data), use_container_width=True)
-
-def display_custom_columns_by_position(position, df, current_idx):
-    """按位置显示自定义列"""
-    if not st.session_state.extra_columns:
-        return
-    
-    # 获取该位置的所有列
-    cols_in_position = []
-    for col_name, col_config in st.session_state.extra_columns.items():
-        if col_config['position'] == position:
-            cols_in_position.append((col_name, col_config))
-    
-    if not cols_in_position:
-        return
-    
-    # 按折叠状态分组
-    direct_cols = []  # 不折叠的列
-    collapsed_cols = []  # 折叠的列
-    
-    for col_name, col_config in cols_in_position:
-        if col_config['collapsed']:
-            collapsed_cols.append((col_name, col_config))
-        else:
-            direct_cols.append((col_name, col_config))
-    
-    # 显示不折叠的列
-    for col_name, col_config in direct_cols:
-        if col_name in df.columns:
-            value = df.iloc[current_idx][col_name]
-            if pd.notna(value):
-                st.markdown(f"**{col_config['display_name']}**")
-                display_custom_column_value(value, col_name, current_idx)
-    
-    # 显示折叠的列
-    if collapsed_cols:
-        with st.expander("📋 更多信息", expanded=False):
-            for col_name, col_config in collapsed_cols:
-                if col_name in df.columns:
-                    value = df.iloc[current_idx][col_name]
-                    if pd.notna(value):
-                        st.markdown(f"**{col_config['display_name']}**")
-                        display_custom_column_value(value, col_name, current_idx)
 
 # ====================== 运行应用 ======================
 if __name__ == "__main__":
